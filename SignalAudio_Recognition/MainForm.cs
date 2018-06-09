@@ -11,6 +11,8 @@ using Accord.Math;
 using Accord.Controls;
 using System.Windows.Forms.DataVisualization.Charting;
 using Accord.Audio.ComplexFilters;
+using System.Linq;
+using System.Collections;
 
 namespace SignalAudio_Recognition
 {
@@ -31,15 +33,16 @@ namespace SignalAudio_Recognition
     
         //Fourier
         WaveChannel32 waveSignalRecord = null;
-        
+
         const int fs = 16384; // Potencia de 2
         const int channel = 1;
         const int secondsRecord = 1;
 
 
-        const int filter = 600; //Hz
-		
-		public MainForm()
+        const int filter = 2000; //Hz*2
+        const int minfilter = 0; //Hz*2
+
+        public MainForm()
 		{
 			InitializeComponent();
 			RefreshListDB();
@@ -139,7 +142,7 @@ namespace SignalAudio_Recognition
         void sourceStream_sStoppedRecord(object sender, StoppedEventArgs e)
         {
             DisposeWaveRecord();
-            //Normalizar señal.
+           // Normalizar señal.
             NormalizeSignalFile("./Sounds/temp_raw.wav", "./Sounds/temp.wav");
             File.Delete("./Sounds/temp_raw.wav");
             RefreshListDB();
@@ -293,8 +296,8 @@ namespace SignalAudio_Recognition
             chart2.Series["FFT"].ChartArea = "ChartArea1";
 
 
-            double[] power = Accord.Audio.Tools.GetMagnitudeSpectrum(channel);
-            double[] freqv = Accord.Audio.Tools.GetFrequencyVector(sComplex.Length, sComplex.SampleRate);
+            double[] power = FilterVoiceHz(Accord.Audio.Tools.GetMagnitudeSpectrum(channel));
+            double[] freqv = FilterVoiceHz(Accord.Audio.Tools.GetFrequencyVector(sComplex.Length, sComplex.SampleRate));
 
             for (int i = 1; i < power.Length; i++)
             {
@@ -350,8 +353,8 @@ namespace SignalAudio_Recognition
             chart2.Series["FFT"].ChartArea = "ChartArea1";
 
 
-            double[] power = Accord.Audio.Tools.GetMagnitudeSpectrum(channel);
-            double[] freqv = Accord.Audio.Tools.GetFrequencyVector(sComplex.Length, sComplex.SampleRate);
+            double[] power = FilterVoiceHz(Accord.Audio.Tools.GetMagnitudeSpectrum(channel));
+            double[] freqv = FilterVoiceHz(Accord.Audio.Tools.GetFrequencyVector(sComplex.Length, sComplex.SampleRate));
 
             for (int i = 1; i < power.Length; i++)
             {
@@ -362,27 +365,40 @@ namespace SignalAudio_Recognition
         private void EqualsButton_Click(object sender, EventArgs e)
         {
 
-            if (soundList.SelectedItems.Count == 0) return;
+            Dictionary<double, string> icorrelation = new Dictionary<double, string>();
 
-
-            string sFile = soundList.SelectedItem.ToString();
-            ComplexSignal recordSignal = FFTComplex("temp");
-            Complex[] recordChannel = recordSignal.GetChannel(0);
-
-            ComplexSignal bd = FFTComplex(sFile);
-            Complex[] bdchannel = bd.GetChannel(0);
-
-            double[] rpower = Accord.Audio.Tools.GetMagnitudeSpectrum(recordChannel);
-            double[] bdpower = Accord.Audio.Tools.GetMagnitudeSpectrum(bdchannel);
-
-
-            chart2.Series.Clear();
-            chart2.Series.Add("FFT");
-            chart2.Series["FFT"].ChartType = SeriesChartType.FastLine;
-            chart2.Series["FFT"].ChartArea = "ChartArea1";
-            for (int i = 601; i < rpower.Length; i++)
+            if (!Directory.Exists("./Sounds")) return;
+            string[] dir_Sounds = Directory.GetFiles("./Sounds");
+            double max = 0;
+            foreach (var sound in dir_Sounds)
             {
-                chart2.Series["FFT"].Points.AddXY(i ,Math.Abs(rpower[i]/rpower.Max()-bdpower[i]/bdpower.Max()));
+                if (!(sound.Contains("temp.wav")) && (sound.Contains(".wav")))
+                {
+                    string name = sound.Replace("./Sounds", "").Replace(".wav", "").Replace(((char)92).ToString(), "");
+
+                    ComplexSignal recordSignal = FFTComplex("temp");
+                    Complex[] recordChannel = recordSignal.GetChannel(0);
+
+                    ComplexSignal bd = FFTComplex(name);
+                    Complex[] bdchannel = bd.GetChannel(0);
+
+                    double[] rpower = NormalizeStretch(FilterVoiceHz(Accord.Audio.Tools.GetMagnitudeSpectrum(recordChannel)), 0, 1);
+                    double[] bdpower = NormalizeStretch(FilterVoiceHz(Accord.Audio.Tools.GetMagnitudeSpectrum(bdchannel)), 0, 1);
+                    double corr = ComputeCoeff(bdpower, rpower);
+                    Console.WriteLine(name+":"+ corr);
+                    icorrelation.Add(corr, name);
+                    if (corr >= max)
+                    {
+                        max = corr;
+                    }
+                }
+            }
+
+            foreach (KeyValuePair<double, string> pair in icorrelation)
+            {
+                if (pair.Key == max) {
+                    MessageBox.Show(pair.Value);
+                }
             }
 
         }
@@ -400,6 +416,57 @@ namespace SignalAudio_Recognition
             return sComplex;
         }
 
+        public double ComputeCoeff(double[] values1, double[] values2)
+        {
+            if (values1.Length != values2.Length)
+                throw new ArgumentException("values must be the same length");
+
+            var avg1 = values1.Average();
+            var avg2 = values2.Average();
+
+            var sum1 = values1.Zip(values2, (x1, y1) => (x1 - avg1) * (y1 - avg2)).Sum();
+
+            var sumSqr1 = values1.Sum(x => Math.Pow((x - avg1), 2.0));
+            var sumSqr2 = values2.Sum(y => Math.Pow((y - avg2), 2.0));
+
+            var result = sum1 / Math.Sqrt(sumSqr1 * sumSqr2);
+
+            return result;
+        }
+
+        public double[] FilterVoiceHz(double[] complex)
+        {
+            double[] x = new double[filter-minfilter];
+            for (int i = minfilter; i <= filter-1; i++)
+            {
+                x[i-minfilter] = complex[i];
+               //Console.WriteLine(i - minfilter);
+            }
+            return x;
+            //return NormalizeStretch(x, 0, 1);
+        }
+
+        public double[] NormalizeStretch(double[] array, double newMin, double newMax)
+        {
+            return array;
+            double minValue = double.MaxValue;
+            double maxValue = double.MinValue;
+
+            for (int index = 0; index < array.Length; index++)
+            {
+                if (array[index] < minValue) minValue = array[index];
+                if (array[index] > maxValue) maxValue = array[index];
+            }
+
+            double scaler = (newMax - newMin) / (maxValue - minValue);
+
+            for (int index = 0; index < array.Length; index++)
+            {
+                array[index] = (array[index] - minValue) * scaler + newMin;
+            }
+
+            return array;
+        }
 
     }
 }
